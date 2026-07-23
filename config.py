@@ -26,7 +26,7 @@ TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN", required=True)
 
 LLM_BASE_URL = _env("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 LLM_API_KEY = _env("LLM_API_KEY", required=True)
-LLM_MODEL = _env("LLM_MODEL", "anthropic/claude-3.5-sonnet")
+LLM_MODEL = _env("LLM_MODEL", "openai/gpt-4o")
 LLM_TIMEOUT = float(_env("LLM_TIMEOUT", "60"))
 
 GCS_LOG_BUCKET = _env("GCS_LOG_BUCKET", required=True)
