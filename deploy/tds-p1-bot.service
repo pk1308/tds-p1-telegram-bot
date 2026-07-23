@@ -1,0 +1,19 @@
+[Unit]
+Description=TDS P1 Q5 Data Analyst Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=tdsbot
+Group=tdsbot
+WorkingDirectory=/opt/tds-p1-telegram-bot
+Environment="PATH=/opt/tds-p1-telegram-bot/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/opt/tds-p1-telegram-bot/.venv/bin/python /opt/tds-p1-telegram-bot/bot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
