@@ -128,8 +128,9 @@ def _chat(messages: list[dict[str, str]]) -> str:
         "X-Title": "TDS P1 Telegram Bot",
     }
     if "aipipe" in config.LLM_BASE_URL.lower():
-        # AIPIPE memory: avoid temperature:0 and use a custom UA to dodge Cloudflare 1010.
+        # AIPIPE memory: avoid temperature, max_tokens; use a custom UA to dodge Cloudflare 1010.
         payload.pop("temperature", None)
+        payload.pop("max_tokens", None)
         headers["User-Agent"] = "Mozilla/5.0 TDS-P1-Bot/1.0"
 
     resp = httpx.post(
