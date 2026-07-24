@@ -13,6 +13,13 @@ A Telegram bot that answers plain-text data-analysis questions with a single JSO
 {"answer": <value shaped as the question asks>, "log_url": "https://storage.googleapis.com/.../run-xxx.jsonl"}
 ```
 
+## Reliability
+
+- LLM calls retry once on transient errors (timeout, connect error, 5xx) with exponential backoff.
+- A fallback model can be configured via `LLM_FALLBACK_MODEL` if the primary model repeatedly fails.
+- Every run uploads a JSONL log with `run_start` and `run_finish` events, including step count and duration.
+- If the agent crashes, the bot still replies with valid JSON and a debug log URL.
+
 ## Quick start (local)
 
 ```bash
