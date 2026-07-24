@@ -32,6 +32,34 @@ class RunLogger:
             self._client = storage.Client()
         return self._client
 
+    def start(self, question: str, model: str) -> None:
+        self.log(
+            "run_start",
+            {
+                "question": question,
+                "model": model,
+                "llm_base_url": config.LLM_BASE_URL,
+            },
+        )
+
+    def finish(
+        self,
+        answer: dict,
+        steps: int,
+        duration_ms: float,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        data: dict[str, Any] = {
+            "answer": answer,
+            "steps": steps,
+            "duration_ms": duration_ms,
+            "status": status,
+        }
+        if error:
+            data["error"] = error
+        self.log("run_finish", data)
+
     def log(self, event: str, data: dict[str, Any]) -> None:
         self._lines.append(
             {
