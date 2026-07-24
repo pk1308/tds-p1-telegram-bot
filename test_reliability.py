@@ -1,6 +1,7 @@
 """Tests for reliability-related configuration defaults."""
 from __future__ import annotations
 
+import json
 import os
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy:token")
@@ -10,6 +11,7 @@ os.environ.setdefault("GCS_LOG_BUCKET", "dummy-bucket")
 import httpx
 
 import agent
+import bot
 import config
 from logger import RunLogger
 
@@ -66,3 +68,20 @@ def test_format_nudge_cap_returns_error(monkeypatch):
     assert "error" in result
     assert "format" in result["error"].lower()
     assert nudges <= 5
+
+
+async def test_bot_handles_agent_exception(mocker):
+    update = mocker.MagicMock()
+    update.message.text = "Test question?"
+    update.effective_chat.id = 123
+    update.message.message_id = 1
+    update.message.reply_text = mocker.AsyncMock()
+
+    mocker.patch("agent.solve", side_effect=RuntimeError("boom"))
+
+    await bot.handle_message(update, mocker.MagicMock())
+
+    reply_text = update.message.reply_text.call_args[0][0]
+    reply = json.loads(reply_text)
+    assert "error" in reply["answer"]
+    assert reply["log_url"].startswith("https://storage.googleapis.com/")

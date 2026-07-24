@@ -88,10 +88,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             + [f"- {m}" for m in context_messages]
             + ["", "Answer the LAST message above."]
         )
+        run_logger.start(full_prompt, config.LLM_MODEL)
         try:
             result = agent.solve(full_prompt, run_logger)
         except Exception as exc:  # noqa: BLE001
-            run_logger.log("agent_exception", {"error": f"{type(exc).__name__}: {exc}"})
+            run_logger.log("bot_exception", {"error": f"{type(exc).__name__}: {exc}"})
             result = {"error": f"Agent crashed: {exc}"}
 
         if "error" in result:
@@ -102,6 +103,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         reply = json.dumps({"answer": answer_value, "log_url": ""}, ensure_ascii=False)
         run_logger.log("reply_draft", {"reply": reply})
     else:
+        run_logger.start(text, config.LLM_MODEL)
         # Acknowledge intermediate context-only messages so collect.py does not
         # time out; keep context for the final question.
         reply = json.dumps({"answer": "OK", "log_url": ""}, ensure_ascii=False)
