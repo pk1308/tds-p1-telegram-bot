@@ -31,11 +31,16 @@ cd "$APP_DIR"
 "$UV_BIN" sync --no-dev
 sudo chown -R "$USER:$USER" "$APP_DIR"
 
-# Write .env from environment variables set by the operator.
-: "${TELEGRAM_BOT_TOKEN:?}"
-: "${LLM_API_KEY:?}"
-: "${GCS_LOG_BUCKET:?}"
-sudo -u "$USER" tee "$APP_DIR/.env" >/dev/null <<EOF
+# Write .env from environment variables set by the operator, or copy an env file.
+ENV_FILE="${1:-}"
+if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+    cp "$ENV_FILE" "$APP_DIR/.env"
+    chown "$USER:$USER" "$APP_DIR/.env"
+else
+    : "${TELEGRAM_BOT_TOKEN:?}"
+    : "${LLM_API_KEY:?}"
+    : "${GCS_LOG_BUCKET:?}"
+    sudo -u "$USER" tee "$APP_DIR/.env" >/dev/null <<EOF
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 LLM_BASE_URL=${LLM_BASE_URL:-https://openrouter.ai/api/v1}
 LLM_API_KEY=${LLM_API_KEY}
@@ -43,6 +48,8 @@ LLM_MODEL=${LLM_MODEL:-openai/gpt-4o}
 GCS_LOG_BUCKET=${GCS_LOG_BUCKET}
 GCS_LOG_PREFIX=${GCS_LOG_PREFIX:-runs/}
 EOF
+fi
+chmod 600 "$APP_DIR/.env"
 
 # Install systemd service.
 sudo cp "$APP_DIR/deploy/tds-p1-bot.service" /etc/systemd/system/
