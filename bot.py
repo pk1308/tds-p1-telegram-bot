@@ -34,9 +34,19 @@ _MAX_CONTEXT = 10
 
 
 JSON_REQUEST_RE = re.compile(
-    r"reply\s+with\s+only.*json|json\s+object|reply\s+with\s+a\s+json",
+    r"json\s*(?:object|value|response|answer|reply)|reply\s+with\s+(?:only\s+)?(?:a\s+)?json|answer\s+with\s+json|respond\s+with\s+json|ONLY\s+(?:this\s+)?JSON",
     re.IGNORECASE,
 )
+
+
+def _looks_like_json_request(text: str) -> bool:
+    """Detect whether the user wants a JSON answer."""
+    if JSON_REQUEST_RE.search(text):
+        return True
+    # If the message contains a JSON literal and ends with a question, it's likely the final ask.
+    has_json_literal = bool(re.search(r"\{[^{}]*\}", text))
+    ends_with_question = text.strip().endswith("?") or "?" in text
+    return has_json_literal and ends_with_question
 
 
 def _store_message(chat_id: int | None, text: str) -> list[str]:
@@ -69,14 +79,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         },
     )
 
-    asks_for_json = bool(JSON_REQUEST_RE.search(text))
-
-    if not asks_for_json:
-        # Acknowledge intermediate context-only messages so collect.py does not
-        # time out; keep context for the final question.
-        reply = json.dumps({"answer": "OK", "log_url": ""}, ensure_ascii=False)
-        run_logger.log("ack", {"reply": reply})
-    else:
+    asks_for_json = _looks_like_json_request(text)
+    # Always answer the first/only message. For multi-turn, answer only the
+    # messages that explicitly ask for a JSON reply; ack others with "OK".
+    if len(context_messages) == 1 or asks_for_json:
         full_prompt = "\n".join(
             ["Conversation so far:"]
             + [f"- {m}" for m in context_messages]
@@ -95,13 +101,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         reply = json.dumps({"answer": answer_value, "log_url": ""}, ensure_ascii=False)
         run_logger.log("reply_draft", {"reply": reply})
+    else:
+        # Acknowledge intermediate context-only messages so collect.py does not
+        # time out; keep context for the final question.
+        reply = json.dumps({"answer": "OK", "log_url": ""}, ensure_ascii=False)
+        run_logger.log("ack", {"reply": reply})
 
     try:
         log_url = run_logger.finalize()
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to upload log")
-        log_url = f"https://storage.googleapis.com/{config.GCS_LOG_BUCKET}/upload-failed"
         run_logger.log("log_upload_failed", {"error": f"{type(exc).__name__}: {exc}"})
+        log_url = f"https://storage.googleapis.com/{config.GCS_LOG_BUCKET}/upload-failed"
 
     # Patch the log_url into the final reply.
     try:
