@@ -41,7 +41,7 @@ Rules:
 - Do not guess. Compute or look up the answer.
 - For MOSPI / government datasets, prefer fetching the official CSV/PDF/data source. If an official site fails due to SSL/certificate, try a reliable secondary source (Wikipedia, PIB, The Hindu, Statista, data.gov.in, archived version) or retry with HTTP instead of HTTPS.
 - Keep Python code self-contained and print the result.
-- If a PDF or HTML table is fetched, use Python (pypdf or pandas.read_html) to extract the relevant numbers.
+- If a PDF or HTML table is fetched, the tool output already extracts text/tables. If you fetch a binary PDF directly inside run_python, use `pypdf.PdfReader` (PyPDF2 is also available).
 - When you are ready, respond ONLY with: Final Answer: <JSON value>
 - Do NOT include markdown, explanations, or prose around the Final Answer.
 - The Final Answer value will be placed inside {"answer": <value>, "log_url": ...} by the bot, so return only the inner value (e.g. {"state": "Assam"}, [1,2,3], "42", true, etc.).
@@ -67,14 +67,18 @@ Final Answer: {"state": "Assam"}
 '''
 
 
+# Match both "Action: tool(...)" and raw "tool(...)" tool calls.
 ACTION_RE = re.compile(
-    r'^\s*Action:\s*(\w+)\((.*)\)\s*$',
+    r'(?:^\s*Action:\s*)?(\w+)\((.*)\)\s*$',
     re.IGNORECASE | re.MULTILINE,
 )
 FINAL_ANSWER_RE = re.compile(
     r'^\s*Final\s*Answer:\s*(.*)$',
     re.IGNORECASE | re.MULTILINE | re.DOTALL,
 )
+# Some models emit tool calls without the "Action:" prefix. Detect those names.
+TOOL_NAMES = set(tools.TOOL_SPECS)
+
 
 
 def _extract_requested_shape(question: str) -> str | None:
@@ -186,6 +190,17 @@ def solve(question: str, logger: RunLogger) -> dict[str, Any]:
 
         action_match = ACTION_RE.search(response)
         if not action_match:
+            # Try a stricter raw tool-call match if the loose regex picked up something
+            # inside prose. We only accept calls whose name is a known tool.
+            for name in TOOL_NAMES:
+                raw_re = re.compile(rf'^\s*{re.escape(name)}\s*\((.*)\)\s*$', re.MULTILINE | re.DOTALL)
+                m = raw_re.search(response)
+                if m:
+                    action_match = m
+                    # Normalise so the groups below work as if it were `name(args)`.
+                    break
+
+        if not action_match or action_match.group(1) not in TOOL_NAMES:
             # Model didn't follow format; nudge it.
             messages.append({"role": "assistant", "content": response})
             messages.append(
@@ -193,6 +208,7 @@ def solve(question: str, logger: RunLogger) -> dict[str, Any]:
                     "role": "user",
                     "content": (
                         "You must either call exactly one Action or give a Final Answer. "
+                        "Valid actions: web_search(...), fetch_url(...), run_python(...). "
                         "Do not include explanation outside the Action/Final Answer line."
                     ),
                 }

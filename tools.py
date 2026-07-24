@@ -74,6 +74,15 @@ def fetch_url(url: str, max_len: int = 12000) -> str:
 
     content_type = resp.headers.get("content-type", "").lower()
     text = resp.text
+    if ".pdf" in url.lower() or "pdf" in content_type:
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(resp.content))
+            pages = [page.extract_text() or "" for page in reader.pages[:10]]
+            full_text = "\n".join(pages)
+            return _truncate(full_text, max_len)
+        except Exception as exc:  # noqa: BLE001
+            return f"fetch_url PDF extraction failed: {type(exc).__name__}: {exc}"
     if ".csv" in url.lower() or "csv" in content_type:
         try:
             reader = csv.DictReader(io.StringIO(text))
