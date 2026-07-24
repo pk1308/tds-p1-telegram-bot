@@ -11,9 +11,13 @@ sudo useradd -r -s /bin/false "$USER" || true
 sudo mkdir -p "$APP_DIR"
 sudo chown "$USER:$USER" "$APP_DIR"
 
-# Install uv.
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
+# Install uv for root (used to run sync in app directory).
+UV_BIN="/usr/local/bin/uv"
+if [ ! -x "$UV_BIN" ]; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    cp "$HOME/.local/bin/uv" "$UV_BIN"
+    chmod +x "$UV_BIN"
+fi
 
 # Clone or pull code.
 if [ -d "$APP_DIR/.git" ]; then
@@ -24,7 +28,8 @@ fi
 
 # Install deps and sync.
 cd "$APP_DIR"
-sudo -u "$USER" uv sync --no-dev
+"$UV_BIN" sync --no-dev
+sudo chown -R "$USER:$USER" "$APP_DIR"
 
 # Write .env from environment variables set by the operator.
 : "${TELEGRAM_BOT_TOKEN:?}"
