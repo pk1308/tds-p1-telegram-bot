@@ -67,17 +67,46 @@ Final Answer: {"state": "Assam"}
 '''
 
 
-# Match both "Action: tool(...)" and raw "tool(...)" tool calls.
-ACTION_RE = re.compile(
-    r'(?:^\s*Action:\s*)?(\w+)\((.*)\)\s*$',
-    re.IGNORECASE | re.MULTILINE,
-)
 FINAL_ANSWER_RE = re.compile(
     r'^\s*Final\s*Answer:\s*(.*)$',
     re.IGNORECASE | re.MULTILINE | re.DOTALL,
 )
-# Some models emit tool calls without the "Action:" prefix. Detect those names.
+# Models may prefix with "Action:" or call tools directly. We only accept known tools.
 TOOL_NAMES = set(tools.TOOL_SPECS)
+
+
+
+def _find_tool_call(response: str) -> tuple[str, str] | None:
+    """Extract one known tool call from the model response.
+
+    Accepts both `Action: tool(...)` and raw `tool(...)` forms, including
+    multiline triple-quoted arguments (e.g. run_python).
+    """
+    # Final answers are not tool calls.
+    if FINAL_ANSWER_RE.search(response):
+        return None
+
+    # 1. Single-line calls (with or without the Action: prefix) anywhere in the
+    #    response. This also handles Thought/Action patterns safely.
+    for name in TOOL_NAMES:
+        line_re = re.compile(
+            rf'(?:^\s*Action:\s*)?{re.escape(name)}\s*\(([^\n]*)\)\s*$',
+            re.IGNORECASE | re.MULTILINE,
+        )
+        m = line_re.search(response)
+        if m:
+            return (name, m.group(1))
+
+    # 2. Whole-response multiline call, e.g. run_python("""...""").
+    for name in TOOL_NAMES:
+        full_re = re.compile(
+            rf'^\s*(?:Action:\s*)?{re.escape(name)}\s*\((.*)\)\s*$',
+            re.IGNORECASE | re.DOTALL,
+        )
+        m = full_re.match(response.strip())
+        if m:
+            return (name, m.group(1))
+    return None
 
 
 
@@ -188,19 +217,8 @@ def solve(question: str, logger: RunLogger) -> dict[str, Any]:
             logger.log("agent_done", {"answer": answer_value, "steps": step + 1})
             return {"answer": answer_value}
 
-        action_match = ACTION_RE.search(response)
-        if not action_match:
-            # Try a stricter raw tool-call match if the loose regex picked up something
-            # inside prose. We only accept calls whose name is a known tool.
-            for name in TOOL_NAMES:
-                raw_re = re.compile(rf'^\s*{re.escape(name)}\s*\((.*)\)\s*$', re.MULTILINE | re.DOTALL)
-                m = raw_re.search(response)
-                if m:
-                    action_match = m
-                    # Normalise so the groups below work as if it were `name(args)`.
-                    break
-
-        if not action_match or action_match.group(1) not in TOOL_NAMES:
+        tool_name, raw_args = _find_tool_call(response)
+        if tool_name is None:
             # Model didn't follow format; nudge it.
             messages.append({"role": "assistant", "content": response})
             messages.append(
@@ -216,7 +234,6 @@ def solve(question: str, logger: RunLogger) -> dict[str, Any]:
             logger.log("format_nudge", {"step": step})
             continue
 
-        tool_name, raw_args = action_match.group(1), action_match.group(2)
         observation = _call_tool(tool_name, raw_args)
         logger.log("tool_call", {"step": step, "tool": tool_name, "args": raw_args, "observation": observation[:2000]})
         messages.append({"role": "assistant", "content": response})
