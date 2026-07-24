@@ -2,49 +2,72 @@
 
 ## What was done
 
-Task 4 is complete. Wired retry, timing, and safety into `agent.solve()`:
+P1 Q5 Telegram Bot reliability/presentation polish is implemented, merged, and redeployed:
 
-- `logger.start()` and `time.monotonic()` run start tracking.
-- `_chat_with_retry()` with per-call `duration_ms` in `llm_response` logs.
-- Format-nudge cap at 3 nudges with `agent_format_fail` log and clean error return.
-- `last_observation` capture in timeout log line.
-- `logger.finish()` on success, timeout, format-fail, and LLM-error exits.
-- Fixed a latent `_find_tool_call()` unpacking bug so the format-nudge branch is reachable.
+- Added LLM retry/backoff config (`config.py`) and `_chat_with_retry()` in `agent.py`.
+- Added `logger.start()` / `logger.finish()` run header/footer events in `logger.py`.
+- Wired retry, timing, format-nudge cap, and crash handling through `agent.solve()` and `bot.py`.
+- Fixed `_find_tool_call()` multiline parsing bug and added `test_action_parsing.py` regression coverage.
+- Added `test_reliability.py` for retry, logger header/footer, format-nudge cap, and bot crash handling.
+- Updated `.env.example` and `README.md`.
+- Merged `polish` into `main` (fast-forward ce577bb) and pushed to GitHub.
+- Redeployed to GCP VM `tds-p1-bot`; `tds-p1-bot.service` is active (running).
 
 ## What is working
 
-- `test_reliability.py::test_format_nudge_cap_returns_error` passes.
-- Full test suite passes: 12 tests green (with dummy env vars for `test_action_parsing.py`).
-- Commits are clean and on the `polish` branch.
+- Local MOSMI sample returned `{"answer": {"state": "Odisha"}}` using live LLM key.
+- Full test suite: 12 passed, 1 failed (`test_fetch_url_json` network timeout — pre-existing, unrelated).
+- VM service restarted cleanly after git pull + `uv sync --no-dev`.
 
 ## What is broken or incomplete
 
-- `parse_error` branch (malformed Final Answer JSON) still returns early without calling `logger.finish()`. This is pre-existing and outside the brief's explicit exit points.
-- `test_action_parsing.py` does not set required env vars, so plain `uv run pytest -q` fails in a clean shell. Workaround: prefix with `TELEGRAM_BOT_TOKEN='dummy:token' LLM_API_KEY='dummy-key' GCS_LOG_BUCKET='dummy-bucket'`.
+- Live Telegram end-to-end test not yet verified.
+- `test_fetch_url_json` remains network-dependent and flaky.
+- `parse_error` branch in `agent.py` still exits without `logger.finish()`; pre-existing and outside the brief's explicit exit points.
 
 ## Next step
 
-No next step for Task 4. If this is part of a larger polish pass, review the report at `.superpowers/sdd/task-4-report.md` and decide whether to backfill `logger.finish()` in the `parse_error` branch.
+Verify live bot output. Send this exact question to `@Tdsp1bot`:
+
+```
+From the latest SRS bulletin (2021-23), what is the Indian state with the highest Maternal Mortality Ratio (MMR)? Return the state name only as JSON: {"state": "..."}
+```
+
+The expected reply format is:
+
+```json
+{"answer": {"state": "Odisha"}, "log_url": "https://storage.googleapis.com/.../runs/run-....jsonl"}
+```
+
+Confirm:
+1. JSON is valid and contains both `answer` and `log_url`.
+2. The log URL returns a JSONL file with `run_start` and `run_finish` events.
+3. If correct, click Save on the portal question.
 
 ## Decisions made
 
-- Committed `TASKS.md` along with code changes because it is the project's progress source of truth, even though the brief's sample commit command omitted it.
-- Did not modify `test_action_parsing.py` because the task brief scoped changes to `agent.py` and `test_reliability.py`.
+- Kept response format unchanged (`{"answer": ..., "log_url": ...}`).
+- No new tools or tool-contract changes.
+- Chose safe polish over structural changes because the question carries 37.5 marks.
+- Did not fix `test_fetch_url_json` or `parse_error` branch because they are pre-existing and outside the current polish scope.
 
 ## Files touched
 
+- `config.py`
+- `logger.py`
 - `agent.py`
+- `bot.py`
 - `test_reliability.py`
+- `test_action_parsing.py`
+- `.env.example`
+- `README.md`
+- `pyproject.toml`
+- `uv.lock`
 - `TASKS.md`
-- `.superpowers/sdd/task-4-report.md` (ignored by git per `.superpowers/sdd/.gitignore`)
+- `HANDOFF.md`
+- Design/plan docs under `docs/superpowers/`
 
 ## Active tasks from TASKS.md
 
 ## Active
-
-## Done
-- [x] TASK-001 · Add optional LLM retry/fallback configuration · completed: 2026-07-23 · tests: test_reliability.py::test_retry_config_defaults
-- [x] TASK-003 · Add LLM retry with backoff · completed: 2026-07-23 · tests: test_reliability.py::test_chat_with_retry_succeeds_on_second_call
-- [x] TASK-004 · Wire retry, timing, and safety into agent.solve · completed: 2026-07-23 · tests: test_reliability.py::test_format_nudge_cap_returns_error
-
-## Blocked / Deferred
+- [ ] TASK-007 · Full regression + live Telegram test · started: 2026-07-24 · blocked by: deployment verification
