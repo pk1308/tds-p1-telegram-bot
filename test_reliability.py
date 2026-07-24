@@ -7,6 +7,9 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy:token")
 os.environ.setdefault("LLM_API_KEY", "dummy-key")
 os.environ.setdefault("GCS_LOG_BUCKET", "dummy-bucket")
 
+import httpx
+
+import agent
 import config
 from logger import RunLogger
 
@@ -32,3 +35,18 @@ def test_logger_start_and_finish(mocker):
     assert events[-1]["duration_ms"] == 1234.5
     assert events[-1]["status"] == "success"
     assert "error" not in events[-1]
+
+
+def test_chat_with_retry_succeeds_on_second_call(monkeypatch):
+    calls = []
+
+    def fake_chat(messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            raise httpx.TimeoutException("first call timeout")
+        return "Final Answer: {\"state\": \"Odisha\"}"
+
+    monkeypatch.setattr(agent, "_chat", fake_chat)
+    result = agent._chat_with_retry([{"role": "user", "content": "hi"}])
+    assert result == "Final Answer: {\"state\": \"Odisha\"}"
+    assert len(calls) == 2

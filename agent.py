@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 import httpx
@@ -177,6 +178,36 @@ def _chat(messages: list[dict[str, str]]) -> str:
     return data["choices"][0]["message"]["content"]
 
 
+def _chat_with_retry(messages: list[dict[str, str]]) -> str:
+    """Call _chat with exponential backoff on transient failures."""
+    last_error = ""
+    for attempt in range(config.LLM_RETRY_ATTEMPTS + 1):
+        try:
+            return _chat(messages)
+        except httpx.TimeoutException as exc:
+            last_error = f"Timeout: {exc}"
+        except httpx.ConnectError as exc:
+            last_error = f"ConnectError: {exc}"
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500:
+                raise
+            last_error = f"HTTP {exc.response.status_code}: {exc}"
+
+        if attempt < config.LLM_RETRY_ATTEMPTS:
+            wait = min(config.LLM_RETRY_BACKOFF_BASE ** attempt, 8.0)
+            time.sleep(wait)
+
+    if config.LLM_FALLBACK_MODEL:
+        try:
+            original_model = config.LLM_MODEL
+            config.LLM_MODEL = config.LLM_FALLBACK_MODEL
+            return _chat(messages)
+        finally:
+            config.LLM_MODEL = original_model
+
+    raise httpx.TransportError(f"LLM unavailable after {config.LLM_RETRY_ATTEMPTS} retries: {last_error}")
+
+
 def solve(question: str, logger: RunLogger) -> dict[str, Any]:
     """Run the agent on the final question and return the inner answer dict/value."""
     shape = _extract_requested_shape(question)
@@ -197,7 +228,7 @@ def solve(question: str, logger: RunLogger) -> dict[str, Any]:
 
     for step in range(config.MAX_AGENT_STEPS):
         try:
-            response = _chat(messages)
+            response = _chat_with_retry(messages)
         except Exception as exc:  # noqa: BLE001
             logger.log("llm_error", {"error": f"{type(exc).__name__}: {exc}"})
             return {"error": f"LLM call failed: {exc}"}
