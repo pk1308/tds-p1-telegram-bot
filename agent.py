@@ -211,6 +211,10 @@ def _chat_with_retry(messages: list[dict[str, str]]) -> str:
 def solve(question: str, logger: RunLogger) -> dict[str, Any]:
     """Run the agent on the final question and return the inner answer dict/value."""
     shape = _extract_requested_shape(question)
+    run_start = time.monotonic()
+    logger.start(question, config.LLM_MODEL)
+    format_nudges = 0
+    last_observation = ""
     logger.log("agent_start", {"question": question, "requested_shape": shape})
 
     messages: list[dict[str, str]] = [
@@ -228,12 +232,15 @@ def solve(question: str, logger: RunLogger) -> dict[str, Any]:
 
     for step in range(config.MAX_AGENT_STEPS):
         try:
+            t0 = time.monotonic()
             response = _chat_with_retry(messages)
+            duration_ms = (time.monotonic() - t0) * 1000
         except Exception as exc:  # noqa: BLE001
             logger.log("llm_error", {"error": f"{type(exc).__name__}: {exc}"})
+            logger.finish({"error": f"LLM call failed: {exc}"}, step + 1, (time.monotonic() - run_start) * 1000, "llm_error", str(exc))
             return {"error": f"LLM call failed: {exc}"}
 
-        logger.log("llm_response", {"step": step, "response": response})
+        logger.log("llm_response", {"step": step, "response": response, "duration_ms": duration_ms})
 
         final_match = FINAL_ANSWER_RE.search(response)
         if final_match:
@@ -246,11 +253,18 @@ def solve(question: str, logger: RunLogger) -> dict[str, Any]:
                 logger.log("parse_error", {"raw": raw, "error": str(exc)})
                 return {"error": f"Final answer is not valid JSON: {exc}", "raw": raw}
             logger.log("agent_done", {"answer": answer_value, "steps": step + 1})
+            logger.finish({"answer": answer_value}, step + 1, (time.monotonic() - run_start) * 1000, "success")
             return {"answer": answer_value}
 
-        tool_name, raw_args = _find_tool_call(response)
-        if tool_name is None:
+        tool_call = _find_tool_call(response)
+        if tool_call is None:
             # Model didn't follow format; nudge it.
+            format_nudges += 1
+            if format_nudges > 3:
+                error_msg = "Agent could not follow tool format after 3 nudges"
+                logger.log("agent_format_fail", {"nudges": format_nudges})
+                logger.finish({"error": error_msg}, step + 1, (time.monotonic() - run_start) * 1000, "timeout")
+                return {"error": error_msg}
             messages.append({"role": "assistant", "content": response})
             messages.append(
                 {
@@ -265,10 +279,14 @@ def solve(question: str, logger: RunLogger) -> dict[str, Any]:
             logger.log("format_nudge", {"step": step})
             continue
 
+        tool_name, raw_args = tool_call
         observation = _call_tool(tool_name, raw_args)
+        last_observation = observation[:500]
         logger.log("tool_call", {"step": step, "tool": tool_name, "args": raw_args, "observation": observation[:2000]})
         messages.append({"role": "assistant", "content": response})
         messages.append({"role": "user", "content": f"Observation:\n{observation}"})
 
-    logger.log("agent_timeout", {"steps": config.MAX_AGENT_STEPS})
-    return {"error": f"Agent did not produce a Final Answer within {config.MAX_AGENT_STEPS} steps"}
+    logger.log("agent_timeout", {"steps": config.MAX_AGENT_STEPS, "last_observation": last_observation})
+    error_msg = f"Agent did not produce a Final Answer within {config.MAX_AGENT_STEPS} steps"
+    logger.finish({"error": error_msg}, config.MAX_AGENT_STEPS, (time.monotonic() - run_start) * 1000, "timeout")
+    return {"error": error_msg}

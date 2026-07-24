@@ -50,3 +50,19 @@ def test_chat_with_retry_succeeds_on_second_call(monkeypatch):
     result = agent._chat_with_retry([{"role": "user", "content": "hi"}])
     assert result == "Final Answer: {\"state\": \"Odisha\"}"
     assert len(calls) == 2
+
+
+def test_format_nudge_cap_returns_error(monkeypatch):
+    nudges = 0
+
+    def fake_chat_with_retry(messages):
+        nonlocal nudges
+        nudges += 1
+        return "This is not a tool call or final answer."
+
+    monkeypatch.setattr(agent, "_chat_with_retry", fake_chat_with_retry)
+    logger = RunLogger(bucket_name="tds-p1-q5-logs-8463bd76cd533105")
+    result = agent.solve("Question?", logger)
+    assert "error" in result
+    assert "format" in result["error"].lower()
+    assert nudges <= 5
