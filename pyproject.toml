@@ -11,7 +11,7 @@ dependencies = [
     "pandas>=2.0",
     "pypdf>=5.0",
     "python-dotenv>=1.0",
-    "python-telegram-bot>=21.0",
+    "python-telegram-bot[job-queue]>=21.0",
 ]
 
 [dependency-groups]
