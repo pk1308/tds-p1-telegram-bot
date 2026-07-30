@@ -90,7 +90,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         run_logger.start(full_prompt, config.LLM_MODEL)
         try:
-            result = agent.solve(full_prompt, run_logger)
+            result = agent.solve_with_retry(full_prompt, run_logger)
         except Exception as exc:  # noqa: BLE001
             run_logger.log("bot_exception", {"error": f"{type(exc).__name__}: {exc}"})
             result = {"error": f"Agent crashed: {exc}"}
@@ -134,9 +134,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(reply)
 
 
+async def _post_init(application: Application) -> None:
+    """Pre-warm the LLM endpoint, DNS, and tool path on a cold start."""
+    logger.info("post_init: warming up LLM + tools")
+    agent.warmup()
+
+
+async def _keepalive(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Periodic warm-up so a quiet VM doesn't go cold between messages."""
+    agent.warmup()
+
+
 def main() -> None:
-    application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+    application = (
+        Application.builder()
+        .token(config.TELEGRAM_BOT_TOKEN)
+        .post_init(_post_init)
+        .build()
+    )
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Keep the endpoint/DNS warm every 5 min so a cold start doesn't cause a
+    # step-exhaustion timeout on the first message after a quiet period.
+    if application.job_queue is not None:
+        application.job_queue.run_repeating(_keepalive, interval=300, first=300)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

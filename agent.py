@@ -75,6 +75,13 @@ FINAL_ANSWER_RE = re.compile(
 # Models may prefix with "Action:" or call tools directly. We only accept known tools.
 TOOL_NAMES = set(tools.TOOL_SPECS)
 
+# Inject a finalize-now nudge this many steps before the cap so the agent
+# always emits a best-guess Final Answer instead of silently exhausting steps.
+# This is the primary fix for cold-start timeouts: cold tools/LLM make the
+# agent loop on failing tool calls; the nudge forces it to commit its best
+# answer with whatever it already has.
+DEADLINE_NUDGE_STEPS = 3
+
 
 
 def _find_tool_call(response: str) -> tuple[str, str] | None:
@@ -147,7 +154,7 @@ def _call_tool(name: str, raw_args: str) -> str:
         return f"Tool error: {type(exc).__name__}: {exc}"
 
 
-def _chat(messages: list[dict[str, str]]) -> str:
+def _chat(messages: list[dict[str, str]], timeout: float | None = None) -> str:
     """Call the configured OpenAI-compatible chat endpoint."""
     payload = {
         "model": config.LLM_MODEL,
@@ -171,7 +178,7 @@ def _chat(messages: list[dict[str, str]]) -> str:
         f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
         json=payload,
         headers=headers,
-        timeout=config.LLM_TIMEOUT,
+        timeout=timeout if timeout is not None else config.LLM_TIMEOUT,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -231,6 +238,18 @@ def solve(question: str, logger: RunLogger) -> dict[str, Any]:
     ]
 
     for step in range(config.MAX_AGENT_STEPS):
+        # Near the step cap, push the agent to commit its best answer now.
+        # Cold tools/LLM can make it loop on failing calls; this guarantees a
+        # Final Answer instead of a silent step-exhaustion timeout.
+        if step >= config.MAX_AGENT_STEPS - DEADLINE_NUDGE_STEPS:
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"You have {config.MAX_AGENT_STEPS - step} step(s) left. "
+                    "Stop calling tools and respond NOW with ONLY: "
+                    "Final Answer: <best JSON value you can produce from what you have>."
+                ),
+            })
         try:
             t0 = time.monotonic()
             response = _chat_with_retry(messages)
@@ -290,3 +309,39 @@ def solve(question: str, logger: RunLogger) -> dict[str, Any]:
     error_msg = f"Agent did not produce a Final Answer within {config.MAX_AGENT_STEPS} steps"
     logger.finish({"error": error_msg}, config.MAX_AGENT_STEPS, (time.monotonic() - run_start) * 1000, "timeout")
     return {"error": error_msg}
+
+
+def warmup() -> None:
+    """Pre-warm the LLM endpoint, DNS, and tool path on a cold start.
+
+    Best-effort: any failure is swallowed so a cold endpoint can't block bot
+    startup. The first real message then behaves like a warm one.
+    """
+    try:
+        _chat(
+            [
+                {"role": "system", "content": "Reply with the single word: ok"},
+                {"role": "user", "content": "ok"},
+            ],
+            timeout=15.0,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        tools.web_search("test")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def solve_with_retry(question: str, logger: RunLogger) -> dict[str, Any]:
+    """Run the agent, retrying once on a step-exhaustion timeout.
+
+    Cold-start timeouts are usually self-curing: by the second attempt the
+    LLM endpoint, DNS, and subprocess are warm. Non-timeout errors are not
+    retried (e.g. an LLM call failure has its own retry in _chat_with_retry).
+    """
+    result = solve(question, logger)
+    if "error" in result and "did not produce a Final Answer" in result["error"]:
+        logger.log("retry_on_timeout", {"first_error": result["error"]})
+        result = solve(question, logger)
+    return result
