@@ -154,10 +154,16 @@ def _call_tool(name: str, raw_args: str) -> str:
         return f"Tool error: {type(exc).__name__}: {exc}"
 
 
-def _chat(messages: list[dict[str, str]], timeout: float | None = None) -> str:
-    """Call the configured OpenAI-compatible chat endpoint."""
+def _chat(messages: list[dict[str, str]], timeout: float | None = None, model: str | None = None) -> str:
+    """Call the configured OpenAI-compatible chat endpoint.
+
+    ``model`` defaults to ``config.LLM_MODEL``. Passing it explicitly keeps the
+    fallback path from mutating the global config, which other concurrent
+    requests read — see _chat_with_retry.
+    """
+    use_model = model or config.LLM_MODEL
     payload = {
-        "model": config.LLM_MODEL,
+        "model": use_model,
         "messages": messages,
         "temperature": 0.2,
         "max_tokens": 4000,
@@ -186,11 +192,17 @@ def _chat(messages: list[dict[str, str]], timeout: float | None = None) -> str:
 
 
 def _chat_with_retry(messages: list[dict[str, str]]) -> str:
-    """Call _chat with exponential backoff on transient failures."""
+    """Call _chat with exponential backoff on transient failures.
+
+    The fallback model is passed as a local argument to _chat — it is NOT
+    assigned to config.LLM_MODEL. Telegram handlers run concurrently, so a
+    global mutation would leak the fallback model into other requests.
+    """
+    primary = config.LLM_MODEL
     last_error = ""
     for attempt in range(config.LLM_RETRY_ATTEMPTS + 1):
         try:
-            return _chat(messages)
+            return _chat(messages, model=primary)
         except httpx.TimeoutException as exc:
             last_error = f"Timeout: {exc}"
         except httpx.ConnectError as exc:
@@ -206,11 +218,9 @@ def _chat_with_retry(messages: list[dict[str, str]]) -> str:
 
     if config.LLM_FALLBACK_MODEL:
         try:
-            original_model = config.LLM_MODEL
-            config.LLM_MODEL = config.LLM_FALLBACK_MODEL
-            return _chat(messages)
-        finally:
-            config.LLM_MODEL = original_model
+            return _chat(messages, model=config.LLM_FALLBACK_MODEL)
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"fallback failed: {type(exc).__name__}: {exc}"
 
     raise httpx.TransportError(f"LLM unavailable after {config.LLM_RETRY_ATTEMPTS} retries: {last_error}")
 
@@ -285,6 +295,10 @@ def solve(question: str, logger: RunLogger, history: list[str] | None = None) ->
                 answer_value = json.loads(raw)
             except json.JSONDecodeError as exc:
                 logger.log("parse_error", {"raw": raw, "error": str(exc)})
+                logger.finish(
+                    {"error": f"Final answer is not valid JSON: {exc}", "raw": raw},
+                    step + 1, (time.monotonic() - run_start) * 1000, "parse_error", str(exc),
+                )
                 return {"error": f"Final answer is not valid JSON: {exc}", "raw": raw}
             logger.log("agent_done", {"answer": answer_value, "steps": step + 1})
             logger.finish({"answer": answer_value}, step + 1, (time.monotonic() - run_start) * 1000, "success")

@@ -42,7 +42,7 @@ def test_logger_start_and_finish(mocker):
 def test_chat_with_retry_succeeds_on_second_call(monkeypatch):
     calls = []
 
-    def fake_chat(messages):
+    def fake_chat(messages, timeout=None, model=None):
         calls.append(messages)
         if len(calls) == 1:
             raise httpx.TimeoutException("first call timeout")

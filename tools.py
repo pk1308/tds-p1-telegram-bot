@@ -19,6 +19,7 @@ import tempfile
 import traceback
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from ddgs import DDGS
@@ -29,6 +30,25 @@ import config
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+# Cap on how many bytes fetch_url will download from one URL, so a hostile or
+# gigantic response can't exhaust memory before truncation kicks in.
+MAX_RESPONSE_BYTES = 2_000_000
+
+# Only these government hosts may be re-fetched with TLS verification disabled.
+# Some Indian govt sites serve broken certs; for everything else a cert failure
+# is treated as a real failure (no verify=False retry → no MITM data into the LLM).
+GOV_TLS_ALLOWLIST = (
+    "mospi.gov.in",
+    "censusindia.gov.in",
+    "data.gov.in",
+    "rbi.org.in",
+    "niti.gov.in",
+    "indiabudget.gov.in",
+    "census.gov.in",
+    "gov.in",
+    "nic.in",
 )
 
 
@@ -54,31 +74,64 @@ def web_search(query: str, max_results: int = 5) -> str:
         return f"web_search failed: {type(exc).__name__}: {exc}"
 
 
-def fetch_url(url: str, max_len: int = 12000) -> str:
-    """Fetch a URL and return its content as text. CSVs are returned as pretty JSON rows."""
-    try:
-        resp = httpx.get(url, headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=30)
+def _is_gov_host(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == g or host.endswith("." + g) for g in GOV_TLS_ALLOWLIST)
+
+
+def _stream(url: str, verify: bool) -> tuple[str, str | None, bytes, bool]:
+    """Stream `url`, reading at most MAX_RESPONSE_BYTES.
+
+    Returns (content_type, encoding, body_bytes, capped). Streaming with a byte
+    cap means a huge URL can't be fully buffered into memory before truncation.
+    """
+    with httpx.stream(
+        "GET",
+        url,
+        headers={"User-Agent": USER_AGENT},
+        follow_redirects=True,
+        timeout=30,
+        verify=verify,
+    ) as resp:
         resp.raise_for_status()
-    except Exception:  # noqa: BLE001
-        # Some government/older sites have certificate issues. Retry once without verification.
+        content_type = resp.headers.get("content-type", "").lower()
+        encoding = resp.encoding
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in resp.iter_bytes():
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= MAX_RESPONSE_BYTES:
+                break
+        return content_type, encoding, b"".join(chunks), total >= MAX_RESPONSE_BYTES
+
+
+def fetch_url(url: str, max_len: int = 12000) -> str:
+    """Fetch a URL and return its content as text. CSVs are returned as pretty JSON rows.
+
+    Streams with a byte cap (MAX_RESPONSE_BYTES) so a huge/hostile URL can't
+    exhaust memory. On a TLS failure the request is retried with verification
+    disabled ONLY for known government hosts (some Indian govt sites serve
+    broken certs); for any other host a cert failure is a real failure, so we
+    never feed an unauthenticated MITM response into the LLM.
+    """
+    try:
+        content_type, encoding, body, capped = _stream(url, verify=True)
+    except Exception as exc:  # noqa: BLE001
+        if not _is_gov_host(url):
+            return f"fetch_url failed: {type(exc).__name__}: {exc}"
         try:
-            resp = httpx.get(
-                url,
-                headers={"User-Agent": USER_AGENT},
-                follow_redirects=True,
-                timeout=30,
-                verify=False,
-            )
-            resp.raise_for_status()
+            content_type, encoding, body, capped = _stream(url, verify=False)
         except Exception as exc2:  # noqa: BLE001
             return f"fetch_url failed: {type(exc2).__name__}: {exc2}"
 
-    content_type = resp.headers.get("content-type", "").lower()
-    text = resp.text
+    text = body.decode(encoding or "utf-8", errors="replace")
+    cap_note = f"\n...[truncated at source, >{MAX_RESPONSE_BYTES} bytes]" if capped else ""
+
     if ".pdf" in url.lower() or "pdf" in content_type:
         try:
             from pypdf import PdfReader
-            reader = PdfReader(io.BytesIO(resp.content))
+            reader = PdfReader(io.BytesIO(body))
             pages = [page.extract_text() or "" for page in reader.pages[:10]]
             full_text = "\n".join(pages)
             return _truncate(full_text, max_len)
@@ -97,11 +150,11 @@ def fetch_url(url: str, max_len: int = 12000) -> str:
             pass
     if ".json" in url.lower() or "json" in content_type:
         try:
-            data = resp.json()
+            data = json.loads(text)
             return json.dumps({"format": "json", "data": data}, indent=2, ensure_ascii=False, default=str)
         except Exception:  # noqa: BLE001
             pass
-    return _truncate(text, max_len)
+    return _truncate(text, max_len) + cap_note
 
 
 def run_python(code: str) -> str:
