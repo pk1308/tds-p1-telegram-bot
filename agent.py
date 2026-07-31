@@ -215,21 +215,36 @@ def _chat_with_retry(messages: list[dict[str, str]]) -> str:
     raise httpx.TransportError(f"LLM unavailable after {config.LLM_RETRY_ATTEMPTS} retries: {last_error}")
 
 
-def solve(question: str, logger: RunLogger) -> dict[str, Any]:
-    """Run the agent on the final question and return the inner answer dict/value."""
+def solve(question: str, logger: RunLogger, history: list[str] | None = None) -> dict[str, Any]:
+    """Run the agent on the current question and return the inner answer dict/value.
+
+    ``question`` is the current (last) user message to answer. ``history`` is the
+    list of prior user messages in the same question exchange (multi-turn
+    context only). Prior messages from *other* questions must never reach here
+    — the bot resets per-chat context between questions — because the agent
+    answers ``question``, not anything in ``history``.
+    """
     shape = _extract_requested_shape(question)
     run_start = time.monotonic()
     logger.start(question, config.LLM_MODEL)
     format_nudges = 0
     last_observation = ""
-    logger.log("agent_start", {"question": question, "requested_shape": shape})
+    logger.log("agent_start", {"question": question, "requested_shape": shape, "history_turns": len(history or [])})
+
+    context_block = ""
+    if history:
+        context_block = (
+            "Earlier messages in this conversation (for context only):\n"
+            + "\n".join(f"- {m}" for m in history)
+            + "\n\n"
+        )
 
     messages: list[dict[str, str]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
             "content": (
-                f"Question:\n{question}\n\n"
+                f"{context_block}Current message (answer THIS one):\n{question}\n\n"
                 f"Requested JSON shape (if any): {shape or 'not explicitly specified'}\n\n"
                 "Think step by step. Call one tool at a time. End with exactly:\n"
                 "Final Answer: <JSON value>"
@@ -333,15 +348,15 @@ def warmup() -> None:
         pass
 
 
-def solve_with_retry(question: str, logger: RunLogger) -> dict[str, Any]:
+def solve_with_retry(question: str, logger: RunLogger, history: list[str] | None = None) -> dict[str, Any]:
     """Run the agent, retrying once on a step-exhaustion timeout.
 
     Cold-start timeouts are usually self-curing: by the second attempt the
     LLM endpoint, DNS, and subprocess are warm. Non-timeout errors are not
     retried (e.g. an LLM call failure has its own retry in _chat_with_retry).
     """
-    result = solve(question, logger)
+    result = solve(question, logger, history=history)
     if "error" in result and "did not produce a Final Answer" in result["error"]:
         logger.log("retry_on_timeout", {"first_error": result["error"]})
-        result = solve(question, logger)
+        result = solve(question, logger, history=history)
     return result

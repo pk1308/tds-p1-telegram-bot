@@ -60,7 +60,7 @@ def test_timeout_retries_once(monkeypatch):
     """solve_with_retry retries once when the first run times out."""
     calls = {"n": 0}
 
-    def fake_solve(question, logger):
+    def fake_solve(question, logger, history=None):
         calls["n"] += 1
         if calls["n"] == 1:
             return {"error": "Agent did not produce a Final Answer within 15 steps"}
@@ -76,7 +76,7 @@ def test_no_retry_on_non_timeout_error(monkeypatch):
     """A non-timeout error is not retried (e.g. LLM call failed)."""
     calls = {"n": 0}
 
-    def fake_solve(question, logger):
+    def fake_solve(question, logger, history=None):
         calls["n"] += 1
         return {"error": "LLM call failed: boom"}
 

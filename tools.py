@@ -11,6 +11,7 @@ import io
 import json
 import math
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -110,7 +111,10 @@ def run_python(code: str) -> str:
         return "No code provided."
 
     runner_path = Path(__file__).with_name("python_runner.py")
-    code_path = Path(tempfile.gettempdir()) / "tds_p1_python_code.py"
+    # Each call gets its own workdir so concurrent runs (the grader fires
+    # several chats in parallel) can't clobber each other's code file.
+    workdir = Path(tempfile.mkdtemp(prefix="tds_p1_sandbox_"))
+    code_path = workdir / "agent_code.py"
     code_path.write_text(code, encoding="utf-8")
 
     try:
@@ -132,6 +136,8 @@ def run_python(code: str) -> str:
         return f"Python execution timed out after {config.PYTHON_TIMEOUT}s."
     except Exception as exc:  # noqa: BLE001
         return f"run_python failed: {type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 TOOL_SPECS: dict[str, dict[str, Any]] = {
