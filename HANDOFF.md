@@ -53,28 +53,30 @@ Changes (all test-first, 59 passed / 1 deselected):
 
 ## What is working
 - Full test suite: **59 passed, 1 deselected** (`test_fetch_url_json` — known
-  network-flaky, unrelated).
+  network-flaky, unrelated). Verified on the VM too.
 - Agent loop, sandbox (numpy/pandas/requests/bs4), shape enforcement, unwrap,
   per-chat ordering, cross-chat parallelism — all verified by tests + live smoke.
+- **Deployed.** VM `tds-p1-bot` runs `be16b28` with `LLM_MODEL=google/gemini-2.5-flash`,
+  service active, warmup OK, polling.
+- **Live MOSPI smoke (on VM, real gemini + real GCS):** question →
+  `{"answer": {"state": "Assam"}}` in 15.1s. The agent wrote `fetch_url` +
+  `pd.read_html` in a fenced block, recovered from a `pd.read_html`
+  string-vs-file error on its own, emitted a wrapped `FINAL_ANSWER` that
+  `_unwrap_answer` corrected. log_url wget-able JSONL with `run_start` +
+  `run_finish` (status success).
 
 ## What is broken or incomplete
-- NOT YET DEPLOYED. The VM `tds-p1-bot` still runs the previous code (`ff5b1c2`)
-  with `openai/gpt-4o`. Next step is the deploy below.
-- The VM `.env` has `LLM_MODEL=openai/gpt-4o` — must be changed to
-  `google/gemini-2.5-flash` during deploy.
 - `test_fetch_url_json` remains network-dependent and flaky (deselected).
 - The OpenRouter key `sk-or-v1-2ac54e0d…` was exposed in an earlier transcript
   and has NOT been rotated. Do it if that transcript is shared.
+- Which exact state the grader's private key expects for MOSPI is unknown; the
+  agent computes from official MOSPI/SRS sources (Assam is the documented
+  highest-MMR state for 2018-20).
 
-## Next step — deploy
-1. Commit the graft on the bot repo (`github.com/pk1308/tds-p1-telegram-bot`).
-2. `gcloud compute ssh tds-p1-bot --zone asia-south1-a`.
-3. `sudo -u tdsbot git pull` in the bot dir.
-4. `sudo -u tdsbot uv sync` (pulls numpy/requests/bs4).
-5. Edit the VM `.env`: `LLM_MODEL=google/gemini-2.5-flash`.
-6. `sudo systemctl restart tds-p1-bot`.
-7. Send the MOSPI question live; confirm the reply is
-   `{"answer": {"state": ...}, "log_url": ...}` and log_url is wget-able.
+## Next step
+- Send the MOSPI question to the bot from a Telegram client and confirm the
+  reply is the `{"answer": {"state": ...}, "log_url": ...}` wrapper end-to-end
+  through Telegram (the on-VM smoke bypassed only the Telegram layer).
 
 ## Decisions made
 - Full graft of the reference engine (fenced-python + FINAL_ANSWER + shape
