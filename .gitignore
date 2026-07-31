@@ -9,3 +9,8 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code scratch (worktrees, local settings)
+.claude/
+# Superpowers skill planning artifacts
+docs/superpowers/
