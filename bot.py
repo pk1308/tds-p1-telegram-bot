@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from telegram import Update
@@ -27,10 +28,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# In-memory conversation context per chat. The grader's sequences are short and
-# fast, so a simple bounded buffer is enough.
+# In-memory conversation context per chat. The grader reuses ONE Telegram chat
+# for every question, so without an explicit reset the agent would see every
+# prior question as context and answer a stale one. We reset a chat's context
+# when (a) we just sent a JSON answer — that ends the current question — and
+# (b) a long quiet gap precedes a new message (belt-and-suspenders, e.g. if a
+# prior answer branch errored before resetting).
 _conversation_context: dict[int | None, list[str]] = {}
+_last_seen: dict[int | None, float] = {}
 _MAX_CONTEXT = 10
+_CONTEXT_RESET_SECONDS = 120.0
 
 
 JSON_REQUEST_RE = re.compile(
@@ -49,14 +56,34 @@ def _looks_like_json_request(text: str) -> bool:
     return has_json_literal and ends_with_question
 
 
-def _store_message(chat_id: int | None, text: str) -> list[str]:
+def _store_message(chat_id: int | None, text: str, *, now: float | None = None) -> list[str]:
+    """Append the incoming message to this chat's context and return the full list.
+
+    If the previous message in this chat was more than ``_CONTEXT_RESET_SECONDS``
+    ago, the context is dropped first — that means a new question has started,
+    not a continuation of the last one. ``now`` is injectable for tests.
+    """
     if chat_id is None:
         return [text]
+    if now is None:
+        now = time.monotonic()
+    last = _last_seen.get(chat_id)
+    if last is not None and now - last > _CONTEXT_RESET_SECONDS:
+        _conversation_context[chat_id] = []
+    _last_seen[chat_id] = now
     ctx = _conversation_context.setdefault(chat_id, [])
     ctx.append(text)
     if len(ctx) > _MAX_CONTEXT:
         ctx.pop(0)
     return list(ctx)
+
+
+def _reset_context(chat_id: int | None) -> None:
+    """Drop this chat's accumulated context — call after sending a JSON answer,
+    since the grader treats our JSON reply as the end of the current question.
+    """
+    if chat_id is not None:
+        _conversation_context.pop(chat_id, None)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -83,14 +110,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Always answer the first/only message. For multi-turn, answer only the
     # messages that explicitly ask for a JSON reply; ack others with "OK".
     if len(context_messages) == 1 or asks_for_json:
-        full_prompt = "\n".join(
-            ["Conversation so far:"]
-            + [f"- {m}" for m in context_messages]
-            + ["", "Answer the LAST message above."]
-        )
-        run_logger.start(full_prompt, config.LLM_MODEL)
+        # The current message is the question to answer; prior messages in the
+        # SAME question (after the per-question reset) are multi-turn context.
+        current_message = text
+        history = context_messages[:-1]
+        run_logger.start(current_message, config.LLM_MODEL)
         try:
-            result = agent.solve_with_retry(full_prompt, run_logger)
+            result = agent.solve_with_retry(current_message, run_logger, history=history)
         except Exception as exc:  # noqa: BLE001
             run_logger.log("bot_exception", {"error": f"{type(exc).__name__}: {exc}"})
             result = {"error": f"Agent crashed: {exc}"}
@@ -130,6 +156,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         run_logger.finalize()
     except Exception:  # noqa: BLE001
         pass
+
+    # We answered: the grader treats this JSON reply as the end of the current
+    # question, so drop this chat's context so the next message starts fresh
+    # and cannot inherit a prior question's text.
+    if len(context_messages) == 1 or asks_for_json:
+        _reset_context(chat_id)
 
     await update.message.reply_text(reply)
 
