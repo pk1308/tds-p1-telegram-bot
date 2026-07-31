@@ -83,9 +83,8 @@ async def test_bot_handles_agent_exception(mocker):
 
     reply_text = update.message.reply_text.call_args[0][0]
     reply = json.loads(reply_text)
-    # Grading contract: the reply is the inner value only — no
-    # {"answer": ..., "log_url": ...} wrapper. On an agent crash the bot
-    # surfaces {"error": ...}; the log_url lives in the run log, not the reply.
-    assert "error" in reply
-    assert "answer" not in reply
-    assert "log_url" not in reply
+    # question.md contract: the reply is {"answer": ..., "log_url": ...}.
+    # On an agent crash the bot surfaces {"error": ...} inside `answer`.
+    assert "error" in reply["answer"]
+    assert "log_url" in reply
+    assert reply["log_url"].startswith("https://storage.googleapis.com/")
