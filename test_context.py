@@ -44,7 +44,6 @@ def test_shape_comes_from_current_message_not_history(monkeypatch):
     {"state": "<state name>"} from the MOSPI question, misdirecting the agent.
     """
     monkeypatch.setattr(agent, "_chat_with_retry", lambda msgs: 'Final Answer: {"median": 15}')
-    monkeypatch.setattr(agent, "_call_tool", lambda name, args: "ok")
 
     current = (
         "The daily sales (in units) for a week are: 12, 15, 9, 20, 18, 25, 14. "
@@ -73,7 +72,6 @@ def test_solve_passes_current_message_as_primary(monkeypatch):
         return 'Final Answer: {"median": 15}'
 
     monkeypatch.setattr(agent, "_chat_with_retry", fake_chat)
-    monkeypatch.setattr(agent, "_call_tool", lambda name, args: "ok")
 
     current = "What is the median of 12, 15, 9? Reply {\"median\": <number>}"
     history = ["Earlier context message about MOSPI data."]
@@ -89,7 +87,6 @@ def test_solve_passes_current_message_as_primary(monkeypatch):
 def test_solve_without_history_still_works(monkeypatch):
     """Single-message question (no history) must still answer correctly."""
     monkeypatch.setattr(agent, "_chat_with_retry", lambda msgs: 'Final Answer: {"state": "Assam"}')
-    monkeypatch.setattr(agent, "_call_tool", lambda name, args: "ok")
     result = agent.solve(
         'Which state? Reply {"state": "<x>"}', _CapLog()
     )

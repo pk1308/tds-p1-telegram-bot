@@ -96,7 +96,6 @@ def test_no_fallback_keeps_model(monkeypatch):
 def test_parse_failure_calls_finish(monkeypatch):
     """An invalid Final Answer JSON must still close the run with run_finish."""
     monkeypatch.setattr(agent, "_chat_with_retry", lambda msgs: "Final Answer: {bad json")
-    monkeypatch.setattr(agent, "_call_tool", lambda name, args: "ok")
     lg = _CapLog()
     result = agent.solve('Q? reply {"state": "x"}', lg)
     assert "error" in result

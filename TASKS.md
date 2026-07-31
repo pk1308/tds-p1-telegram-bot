@@ -1,11 +1,17 @@
 ## Active
-- [ ] TASK-007 · Full regression + live Telegram test · started: 2026-07-24 · blocked by: deployment verification
+- [ ] TASK-14 · Deploy graft to GCP VM, switch .env to gemini-2.5-flash,
+      smoke-test the MOSPI question live · started: 2026-07-31 · blocked by: user deploy go-ahead
 
 ## Done
-- [x] TASK-001 · Add optional LLM retry/fallback configuration · completed: 2026-07-23 · tests: test_reliability.py::test_retry_config_defaults
-- [x] TASK-003 · Add LLM retry with backoff · completed: 2026-07-23 · tests: test_reliability.py::test_chat_with_retry_succeeds_on_second_call
-- [x] TASK-004 · Wire retry, timing, and safety into agent.solve · completed: 2026-07-23 · tests: test_reliability.py::test_format_nudge_cap_returns_error
-- [x] TASK-005 · Add graceful bot-level crash handling · completed: 2026-07-23 · tests: test_reliability.py::test_bot_handles_agent_exception
+- [x] TASK-10 · Write failing tests for the graft · completed: 2026-07-31
+- [x] TASK-11 · Rewrite agent.py (fenced-python + FINAL_ANSWER + shape enforce + unwrap) · completed: 2026-07-31 · tests: test_agent_protocol.py
+- [x] TASK-12 · Open the python sandbox (pandas/numpy/requests/bs4) · completed: 2026-07-31 · tests: test_tools.py::test_run_python_allows_data_libs
+- [x] TASK-13 · Switch model to gemini-2.5-flash + per-chat ordering/parallelism · completed: 2026-07-31 · tests: test_concurrency.py
+- [x] TASK-001 · Add optional LLM retry/fallback configuration · completed: 2026-07-23
+- [x] TASK-003 · Add LLM retry with backoff · completed: 2026-07-23
+- [x] TASK-004 · Wire retry, timing, and safety into agent.solve · completed: 2026-07-23
+- [x] TASK-005 · Add graceful bot-level crash handling · completed: 2026-07-23
 - [x] TASK-007 · Merge and redeploy to GCP VM · completed: 2026-07-24
 
 ## Blocked / Deferred
+- [ ] Rotate the OpenRouter key exposed in an earlier transcript (not done).

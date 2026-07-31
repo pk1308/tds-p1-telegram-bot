@@ -34,7 +34,6 @@ def test_deadline_nudge_forces_final_answer(monkeypatch):
         return 'Thought: searching\nAction: web_search("x")'
 
     monkeypatch.setattr(agent, "_chat_with_retry", chat)
-    monkeypatch.setattr(agent, "_call_tool", lambda name, args: "Observation: no results")
     result = agent.solve('Q? reply with {"state": "x"}', _FakeLogger())
     assert result == {"answer": {"state": "Assam"}}
 

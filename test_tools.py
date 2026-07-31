@@ -21,9 +21,16 @@ def test_run_python_last_expression() -> None:
     assert "[0, 2, 4]" in out or "Result: [0, 2, 4]" in out, out
 
 
-def test_run_python_import_blocked() -> None:
-    out = tools.run_python("import os\nprint(os.getcwd())")
-    assert "error" in out.lower() or "No module" in out, out
+def test_run_python_allows_data_libs() -> None:
+    """The sandbox exposes the data-analysis stack (numpy, pandas, requests,
+    bs4) so the agent can do real data work in one fenced block — the core
+    capability gap that the graft closes."""
+    out = tools.run_python(
+        "import numpy as np, pandas as pd, requests, bs4\n"
+        "print('libs ok', int(np.array([1, 2]).sum()))"
+    )
+    assert "libs ok" in out, out
+    assert "3" in out, out
 
 
 def test_run_python_concurrent_no_clobber() -> None:

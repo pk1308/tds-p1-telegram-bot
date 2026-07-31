@@ -17,6 +17,7 @@ with "OK", and only emit the final JSON answer when the message asks for it.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -50,6 +51,25 @@ _CONTEXT_RESET_SECONDS = 120.0
 # Telegram handlers run concurrently; guard the shared context dicts so a
 # read-modify-write in one request can't lose an append from another.
 _context_lock = threading.Lock()
+
+# Per-chat asyncio locks. The grader reuses one chat across a multi-turn
+# question, so messages in the SAME chat must be handled strictly in order
+# (store -> solve -> reply). Different chats run in parallel. We process updates
+# concurrently (concurrent_updates=True) and offload the blocking agent work to
+# threads, so one chat's slow LLM call does not block another chat's reply.
+_chat_locks: dict[int, asyncio.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _chat_lock(chat_id: int | None) -> asyncio.Lock:
+    """Get (or lazily create) the asyncio.Lock for this chat."""
+    key = chat_id if chat_id is not None else 0
+    with _locks_guard:
+        lock = _chat_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _chat_locks[key] = lock
+        return lock
 
 
 JSON_REQUEST_RE = re.compile(
@@ -116,83 +136,92 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     text = update.message.text
     chat_id = update.effective_chat.id if update.effective_chat else None
-    message_id = update.message.message_id
-    context_messages = _store_message(chat_id, text)
 
-    run_logger = RunLogger()
-    run_logger.log(
-        "message_received",
-        {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": text,
-            "context_length": len(context_messages),
-        },
-    )
+    # Serialize same-chat handling (store -> solve -> reply in order) while
+    # different chats proceed in parallel. The blocking agent + GCS work runs in
+    # a thread so it never blocks the event loop (and therefore never blocks a
+    # different chat's handler).
+    async with _chat_lock(chat_id):
+        message_id = update.message.message_id
+        context_messages = _store_message(chat_id, text)
 
-    asks_for_json = _looks_like_json_request(text)
-    # Always answer the first/only message. For multi-turn, answer only the
-    # messages that explicitly ask for a JSON reply; ack others with "OK".
-    if len(context_messages) == 1 or asks_for_json:
-        # The current message is the question to answer; prior messages in the
-        # SAME question (after the per-question reset) are multi-turn context.
-        current_message = text
-        history = context_messages[:-1]
-        run_logger.start(current_message, config.LLM_MODEL)
-        try:
-            result = agent.solve_with_retry(current_message, run_logger, history=history)
-        except Exception as exc:  # noqa: BLE001
-            run_logger.log("bot_exception", {"error": f"{type(exc).__name__}: {exc}"})
-            result = {"error": f"Agent crashed: {exc}"}
+        run_logger = RunLogger()
+        run_logger.log(
+            "message_received",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "context_length": len(context_messages),
+            },
+        )
 
-        if "error" in result:
-            answer_value: Any = {"error": result["error"]}
+        asks_for_json = _looks_like_json_request(text)
+        # Always answer the first/only message. For multi-turn, answer only the
+        # messages that explicitly ask for a JSON reply; ack others with "OK".
+        if len(context_messages) == 1 or asks_for_json:
+            # The current message is the question to answer; prior messages in
+            # the SAME question (after the per-question reset) are multi-turn
+            # context.
+            current_message = text
+            history = context_messages[:-1]
+            run_logger.start(current_message, config.LLM_MODEL)
+            try:
+                result = await asyncio.to_thread(
+                    agent.solve_with_retry, current_message, run_logger, history
+                )
+            except Exception as exc:  # noqa: BLE001
+                run_logger.log("bot_exception", {"error": f"{type(exc).__name__}: {exc}"})
+                result = {"error": f"Agent crashed: {exc}"}
+
+            if "error" in result:
+                answer_value: Any = {"error": result["error"]}
+            else:
+                answer_value = result.get("answer")
+
+            answered = True
         else:
-            answer_value = result.get("answer")
+            run_logger.start(text, config.LLM_MODEL)
+            # Acknowledge intermediate context-only messages so collect.py does
+            # not time out; keep context for the final question. This ack is
+            # never the final reply of a question, so its shape is not graded.
+            answered = False
 
-        answered = True
-    else:
-        run_logger.start(text, config.LLM_MODEL)
-        # Acknowledge intermediate context-only messages so collect.py does not
-        # time out; keep context for the final question. This ack is never the
-        # final reply of a question, so its shape does not affect grading.
-        answered = False
+        # Upload the run log to GCS first so the reply can carry a real log_url
+        # (question.md requires {"answer": ..., "log_url": <public wget-able URL>}).
+        # finalize() already retries transient GCS failures; this catch is the
+        # rare persistent-outage path. We do NOT fabricate a fake
+        # reachable-looking path (it would fail the grader's reachability check)
+        # — we use the real intended object URL and log loudly that upload failed.
+        try:
+            log_url = await asyncio.to_thread(run_logger.finalize)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to upload run log after retries")
+            run_logger.log("log_upload_failed", {"error": f"{type(exc).__name__}: {exc}"})
+            log_url = f"https://storage.googleapis.com/{run_logger.bucket_name}/{run_logger.object_name}"
 
-    # Upload the run log to GCS first so the reply can carry a real log_url
-    # (question.md requires {"answer": ..., "log_url": <public wget-able URL>}).
-    # finalize() already retries transient GCS failures; this catch is the rare
-    # persistent-outage path. We do NOT fabricate a fake reachable-looking path
-    # (it would fail the grader's reachability check) — we use the real intended
-    # object URL (where the log belongs) and log loudly that upload failed.
-    try:
-        log_url = run_logger.finalize()
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to upload run log after retries")
-        run_logger.log("log_upload_failed", {"error": f"{type(exc).__name__}: {exc}"})
-        log_url = f"https://storage.googleapis.com/{run_logger.bucket_name}/{run_logger.object_name}"
+        if answered:
+            reply = _final_reply(answer_value, log_url)
+            run_logger.log("reply_draft", {"reply": reply})
+        else:
+            reply = "OK"
+            run_logger.log("ack", {"reply": reply})
 
-    if answered:
-        reply = _final_reply(answer_value, log_url)
-        run_logger.log("reply_draft", {"reply": reply})
-    else:
-        reply = "OK"
-        run_logger.log("ack", {"reply": reply})
+        run_logger.log("reply_sent", {"reply": reply, "log_url": log_url})
+        logger.info("run log_url=%s reply=%s", log_url, reply)
+        # Best-effort re-upload with the final reply included.
+        try:
+            await asyncio.to_thread(run_logger.finalize)
+        except Exception:  # noqa: BLE001
+            pass
 
-    run_logger.log("reply_sent", {"reply": reply, "log_url": log_url})
-    logger.info("run log_url=%s reply=%s", log_url, reply)
-    # Best-effort re-upload with the final reply included.
-    try:
-        run_logger.finalize()
-    except Exception:  # noqa: BLE001
-        pass
+        # We answered: the grader treats this JSON reply as the end of the
+        # current question, so drop this chat's context so the next message
+        # starts fresh and cannot inherit a prior question's text.
+        if len(context_messages) == 1 or asks_for_json:
+            _reset_context(chat_id)
 
-    # We answered: the grader treats this JSON reply as the end of the current
-    # question, so drop this chat's context so the next message starts fresh
-    # and cannot inherit a prior question's text.
-    if len(context_messages) == 1 or asks_for_json:
-        _reset_context(chat_id)
-
-    await update.message.reply_text(reply)
+        await update.message.reply_text(reply)
 
 
 async def _post_init(application: Application) -> None:
@@ -210,6 +239,7 @@ def main() -> None:
     application = (
         Application.builder()
         .token(config.TELEGRAM_BOT_TOKEN)
+        .concurrent_updates(True)
         .post_init(_post_init)
         .build()
     )
